@@ -1,5 +1,6 @@
 ﻿& {
-# Туннель для Claude (общий) — РЕЛИЗ 9 (19.10.2026, ответ 9888): шаг 1 проверяет не только службу, а настоящий ответ SSH-2.0
+# Туннель для Claude (общий) — РЕЛИЗ 10 (01.11.2026, ответ 15721): замок from= на ключах специалистов — пускают только с наших адресов.
+# РЕЛИЗ 9 (19.10.2026, ответ 9888): шаг 1 проверяет не только службу, а настоящий ответ SSH-2.0
 #   на 127.0.0.1:22 (один ПК: служба Running, вход рвётся); нет ответа — перезапуск службы, журнал, подсказка про 360.
 # РЕЛИЗ 8 (19.10.2026, ответ 9867): SSH нет — ставит OpenSSH Microsoft из нашей копии на сервер
 #   (без Windows Update и GitHub; помогает и ПК без DNS), только если не вышло — старый путь ssh-claude.txt.
@@ -334,6 +335,24 @@ try { Start-Service sshd } catch {
     }
     $ErrorActionPreference = 'Stop'
 }
+# РЕЛИЗ 10 (15721): замок from= на ключах специалистов — даже украденный ключ пустит только с наших адресов
+#   (машины из профиля сборки + вход через туннель 127.0.0.1). Чужие строки не трогаем. Откат — копия .bak_15721 рядом.
+$lockIp = @(@({{ALLOW_IPS}}) + @({{LOCK_EXTRA}}) | Where-Object { $_ })
+if ($lockIp.Count -gt 0 -and (Test-Path $ak)) { try {
+    $From = 'from="' + ((@($lockIp + '127.0.0.1', '::1') | Select-Object -Unique) -join ',') + '"'
+    $blobs = @({{KEY_BLOBS}}); $lines = [IO.File]::ReadAllLines($ak); $chg = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*(?:from="[^"]*"\s+)?(ssh-ed25519\s+(\S+).*?)\s*$' -and $blobs -contains $matches[2]) {
+            $nl = "$From $($matches[1])"; if ($nl -ne $lines[$i]) { $lines[$i] = $nl; $chg = $true }
+        }
+    }
+    if ($chg) {
+        Copy-Item $ak "$ak.bak_15721" -Force
+        [IO.File]::WriteAllText($ak, (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
+        icacls $ak /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+        Write-Host '   замок: ключи Claude пускают только с наших адресов' -ForegroundColor Green
+    }
+} catch { Write-Host "   замок ключа не поставил: $($_.Exception.Message)" -ForegroundColor Yellow } }
 # РЕЛИЗ 9: служба «работает» ещё не значит, что SSH отвечает (один ПК: служба Running, а вход через туннель
 #   рвётся сразу — «kex_exchange_identification: Connection closed»). Проверяем по-настоящему: приветствие SSH-2.0 на 127.0.0.1:22.
 function Test-SshBanner {
@@ -471,7 +490,7 @@ function Register-TaskXml($name, $exe, $arg, $desc, $repeat, $limit) {
 }
 Write-Host '6/7 Задача «Claude туннель» (от SYSTEM, при включении ПК и каждую минуту, если оборвался)...' -ForegroundColor Cyan
 $targ = "-N -T $base $($ok.kh) -i $($ok.t) -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -E $D/ssh.log -R 127.0.0.1:${Port}:127.0.0.1:22 {{TUNNEL_USER}}@$okSrv"
-$tdesc = "Туннель на сервер {{SRV_NAME}} для специалиста: номер клиента $Port, ПК $pcName, сотовый $ph (общий РЕЛИЗ 9). Отключить — правой кнопкой -> Отключить."
+$tdesc = "Туннель на сервер {{SRV_NAME}} для специалиста: номер клиента $Port, ПК $pcName, сотовый $ph (общий РЕЛИЗ 10). Отключить — правой кнопкой -> Отключить."
 Stop-Tunnel
 if ($NewPS) {
     $act = New-ScheduledTaskAction -Execute $ssh -Argument $targ

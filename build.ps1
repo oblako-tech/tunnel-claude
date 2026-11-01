@@ -31,6 +31,7 @@ foreach ($name in $sec.Keys) {
     if ($ip) { $allow += "'$ip'"; $from += "'$ip' = '$lb'" }
     if ($rd) { $allow += "'$rd'"; $from += "'$rd' = 'Radmin: $lb'" }
 }
+$blobs = @(foreach ($name in $sec.Keys) { if ($name -like 'key.*') { $b = Get1 $name 'blob'; if ($b) { "'$b'" } } })
 
 $map = @{
     SERVER = M 'host'; SERVER_ALT = M 'host_alt'; PORT = M 'port' '22'; SRV_NAME = Q (M 'srv_name'); HOST_ALIAS = M 'host_alias' 'tunnelsrv'
@@ -38,6 +39,7 @@ $map = @{
     TASK_NAME = Q (M 'task_name' 'Claude туннель'); JOURNAL = M 'journal' 'Журнал доступа Claude.txt'; LOG_DIR = Q (M 'log_dir' 'C:\Мост')   # журналы — в папку, не на столы (12980)
     FILES_URL = Q (M 'files_url'); SSH_FALLBACK_URL = Q (M 'ssh_fallback_url'); ENROLL_KEY = $enrollKey
     HOSTKEYS = $hostkeys; ALLOW_IPS = ($allow -join ', '); FROM_MAP = ($from -join '; ')
+    KEY_BLOBS = ($blobs -join ', '); LOCK_EXTRA = (@((M 'lock_extra') -split '[ ,]+' | Where-Object { $_ } | ForEach-Object { "'$_'" }) -join ', ')   # замок from= (15721)
     RD_URL = Q (M 'rustdesk_url'); RD_SHA = M 'rustdesk_sha256'; RD_HOST = Q (M 'rustdesk_host'); RD_RELAY = Q (M 'rustdesk_relay')
     RD_KEY = Q (M 'rustdesk_key'); RD_CFG = Q (M 'rustdesk_config')   # RustDesk первым шагом (12503); пусто — шаг пропускается
     RV_URL = Q (M 'radmin_url'); RV_SHA = M 'radmin_sha256'   # Radmin VPN тихо (12540); пусто — не ставим
