@@ -57,6 +57,9 @@ class Result
     public List<string[]> Pings = new List<string[]>();
     public int Overall; public string Head = "", Port = "", Radmin = "", Pc = "";
     public int TaskSt;
+    // 104.16 (Михаил, чат 1489): индикаторы «SSH 22 · Туннель · Сервер · Агент» и что делает агент
+    public bool SshOk, TunOk, SrvOk, NetOk; public double TunUp; public int AgentN; public string AgentWho = "", AgentSince = "", Doing = "", DoingAt = "";
+    public List<string> Feed = new List<string>();   // последние входы, выходы и команды из журнала — в ленту чата
 }
 
 class MainForm : Form
@@ -104,6 +107,10 @@ class MainForm : Form
     Srv[] servers; Result last;
     // компактный вид (Михаил, 12479): тумблер, номер для специалиста, 3 шага; «Подробно» — прежнее окно с таблицами
     Panel pCompact; LinkLabel lnkSrc; Control[] full; bool copiedFlag; DateTime copiedAt;
+    // 104.16 (Михаил, чат 1489): боковая панель «Агент и проверки» — огоньки с пояснениями и живой чат с агентом
+    Panel pChat, pInd; RichTextBox rtbChat; TextBox txtChat; Button bSend; bool chatOpen; const int ChatW = 400;
+    DateTime chatGetAt = DateTime.MinValue; volatile bool chatBusy; volatile string chatInfo = ""; string chatShown = "";
+    readonly List<string> chatMine = new List<string>(); volatile string[] chatAgent = new string[0];
     bool copied { get { return copiedFlag; } set { copiedFlag = value; if (value) copiedAt = DateTime.Now; } }
 
     public MainForm()
@@ -215,7 +222,8 @@ class MainForm : Form
             bool wasQ = rQuit.Contains(hover);
             hover = e.Location; pCompact.Invalidate(new Rectangle(0, 0, pCompact.Width, TitleH));
             if (wasQ != rQuit.Contains(e.Location)) pCompact.Invalidate(new Rectangle(0, rQuit.Y - 40, pCompact.Width, 90));
-            pCompact.Cursor = rQuit.Contains(e.Location) || rBtn.Contains(e.Location) || rCode.Contains(e.Location) && CodeShown || rLink.Contains(e.Location) || rAuto.Contains(e.Location) || rRd.Contains(e.Location) || rUpd.Contains(e.Location) || rPwNew.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+            pCompact.Invalidate(new Rectangle(0, TitleH, pCompact.Width, Math.Max(rChat.Bottom, rUpd.Bottom) + 4 - TitleH));   // подсветка кнопок наверху
+            pCompact.Cursor = rQuit.Contains(e.Location) || rBtn.Contains(e.Location) || rCode.Contains(e.Location) && CodeShown || rLink.Contains(e.Location) || rAuto.Contains(e.Location) || rRd.Contains(e.Location) || rUpd.Contains(e.Location) || rPwNew.Contains(e.Location) || rChat.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
         };
         pCompact.MouseDown += (s, e) =>   // тянем окно за верхнюю строку
         {
@@ -241,8 +249,10 @@ class MainForm : Form
                 OpenRustDesk();
             }
             else if (rUpd.Contains(e.Location)) CheckUpdate(true);
+            else if (rChat.Contains(e.Location)) ToggleChat();
         };
         Controls.Add(pCompact); pCompact.BringToFront();
+        BuildChat();
         Resize += delegate { if (pCompact.Visible) Corners(); };
 
         var bBack = Btn("Компактно ▴", Color.FromArgb(120, 120, 120), 140);   // из подробного вида — обратно
@@ -265,7 +275,7 @@ class MainForm : Form
 
     class Canvas : Panel { public Canvas() { DoubleBuffered = true; ResizeRedraw = true; } }
     const int TitleH = 40;
-    Bitmap bgOn, bgOff; Rectangle rBtn, rCode, rMore, rLink, rMin, rMax, rClose, rRd, rUpd, rPwNew, rQuit; Point hover;
+    Bitmap bgOn, bgOff; Rectangle rBtn, rCode, rMore, rLink, rMin, rMax, rClose, rRd, rUpd, rPwNew, rQuit, rChat; Point hover;
     static readonly bool ShowQuit = Pf.Get("show_quit", "0") == "1";   // значок выключения слева внизу (13052: по умолчанию скрыт)
     // 103.9 (12521): повтор установки раз в 5 минут, пока туннель не встанет; обновление программы на лету; RustDesk и его ID в окне
     static readonly string UpdateUrl = Pf.Get("update_url", "");   // без расширения: рядом лежат .exe и .txt («103.9 SHA256»)
@@ -469,6 +479,19 @@ class MainForm : Form
             Text3D(g, updText != "" ? updText : "Обновить · " + Rel, f, br, rUpd, center);
             if (rdPw != "") Text3D(g, "Сменить пароль", f, br, rPwNew, center);
         }
+        // 104.16 (Михаил, чат 1489): четыре огонька — что именно работает, кнопка «Чат с агентом» и строка, что делает агент
+        PaintChips(g, new RectangleF(card.X, rUpd.Bottom + 12, card.Width, 30));
+        rChat = new Rectangle((int)card.X, rUpd.Bottom + 50, (int)card.Width, 40);
+        using (var pth = Round(rChat, 12))
+        {
+            using (var br = new SolidBrush(rChat.Contains(hover) ? Color.FromArgb(230, 214, 126, 18) : Color.FromArgb(200, 30, 24, 20))) g.FillPath(br, pth);
+            using (var pen = new Pen(Color.FromArgb(190, 255, 222, 175), 1.4f)) g.DrawPath(pen, pth);
+        }
+        using (var f = new Font("Segoe UI", 12f, FontStyle.Bold))
+            Text3D(g, chatOpen ? "◂ Скрыть чат с агентом" : "Чат с агентом и подробности ▸", f, Brushes.White, rChat, center);
+        using (var pth = Round(new Rectangle((int)card.X, rChat.Bottom + 4, (int)card.Width, 24), 8)) using (var bk = new SolidBrush(Color.FromArgb(185, 24, 20, 18))) g.FillPath(bk, pth);   // тёмная подложка — на облаках не читалось
+        using (var f = new Font("Segoe UI", 10f, FontStyle.Bold)) using (var br = new SolidBrush(Color.FromArgb(255, 236, 140)))
+            Text3D(g, AgentLine(), f, br, new RectangleF(card.X, rChat.Bottom + 5, card.Width, 22), new StringFormat(center) { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
         // внизу на картинке — ссылка на открытый код
         string url = SourceUrl.Replace("https://", "");
         using (var f = new Font("Segoe UI", 10f)) using (var fu = new Font("Segoe UI", 10f, FontStyle.Underline))
@@ -504,9 +527,202 @@ class MainForm : Form
         }
     }
 
+    static readonly Color[] Dots = { Color.FromArgb(235, 70, 55), Color.FromArgb(70, 215, 100), Color.FromArgb(245, 200, 60), Color.FromArgb(150, 150, 150) };
+    // огонёк: 0 красный, 1 зелёный, 3 серый (ещё не проверено / никого нет)
+    int[] ChipState()
+    {
+        var r = last;
+        if (r == null || r.TaskSt <= 0) return new[] { 3, 3, 3, 3 };
+        return new[] { r.SshOk ? 1 : 0, r.TunOk ? 1 : 0, r.SrvOk ? 1 : 0, r.AgentN > 0 ? 1 : 3 };
+    }
+    static readonly string[] ChipNames = { "SSH 22", "Туннель", "Сервер " + SN, "Агент" };
+
+    void PaintChips(Graphics g, RectangleF r)
+    {   // тёмная полоса, четыре равные части «точка + слово»
+        using (var p = Round(r, 10)) using (var br = new SolidBrush(Color.FromArgb(170, 20, 16, 14))) g.FillPath(br, p);
+        var st = ChipState(); float cw = r.Width / 4;
+        using (var f = new Font("Segoe UI", 10f, FontStyle.Bold))
+            for (int i = 0; i < 4; i++)
+            {
+                float tw = g.MeasureString(ChipNames[i], f).Width, x = r.X + i * cw + (cw - tw - 14) / 2, cy = r.Y + r.Height / 2;
+                using (var br = new SolidBrush(Dots[st[i]])) g.FillEllipse(br, x, cy - 5, 10, 10);
+                using (var pen = new Pen(Color.FromArgb(120, 0, 0, 0))) g.DrawEllipse(pen, x, cy - 5, 10, 10);
+                g.DrawString(ChipNames[i], f, Brushes.White, x + 13, cy - f.Height / 2f);
+            }
+    }
+
+    string AgentLine()
+    {
+        var r = last;
+        if (r == null) return "проверяю…";
+        if (r.AgentN > 0) return "Агент на связи: " + (r.AgentWho != "" ? r.AgentWho : "специалист") + (r.AgentSince != "" ? " с " + r.AgentSince : "") + (r.Doing != "" ? " — " + r.Doing : "");
+        if (r.TaskSt <= 0 || !r.TunOk) return "Агент не может зайти: туннель не поднят";
+        return "Агент сейчас не подключён" + (r.AgentSince != "" ? " (последний вход " + r.AgentSince + ")" : "");
+    }
+
+    static string Mins(double sec) { int m = (int)(sec / 60); return m < 60 ? m + " мин" : m / 60 + " ч " + m % 60 + " мин"; }
+
+    void BuildChat()
+    {   // правая панель: шапка, огоньки с пояснениями, что значит «Мы рядом», лента и поле ввода (порядок добавления — Fill первым)
+        pChat = new Panel { Dock = DockStyle.Right, Width = ChatW, BackColor = Color.FromArgb(32, 26, 24), Visible = false };
+        rtbChat = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(24, 20, 18), ForeColor = Color.FromArgb(240, 230, 220), Font = new Font("Segoe UI", 10.5f), DetectUrls = false };
+        var low = new Panel { Dock = DockStyle.Bottom, Height = 46, BackColor = Color.FromArgb(38, 35, 35), Padding = new Padding(8) };
+        bSend = new Button { Text = "Отправить", Dock = DockStyle.Right, Width = 100, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(214, 126, 18), ForeColor = Color.White, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
+        bSend.FlatAppearance.BorderSize = 0;
+        txtChat = new TextBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 11f), BackColor = Color.FromArgb(250, 245, 238), MaxLength = 2000 };
+        txtChat.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Enter) { e.SuppressKeyPress = true; SendChat(); } };
+        bSend.Click += delegate { SendChat(); };
+        low.Controls.Add(txtChat); low.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 6 }); low.Controls.Add(bSend);
+        var what = new Label { Dock = DockStyle.Top, Height = 136, Padding = new Padding(12, 6, 12, 6), ForeColor = Color.FromArgb(255, 222, 175), BackColor = Color.FromArgb(44, 36, 32), Font = new Font("Segoe UI", 9.5f),
+            Text = "Зелёный «Мы рядом» = туннель поднят, сервер " + SN + " на связи, SSH на этом ПК отвечает: агент или специалист может зайти в любую минуту.\r\n" +
+                   "НЕ значит, что агент уже зашёл или что-то делает — это видно в строке «Агент». Закрыть доступ — кнопка «Отключить»." };
+        pInd = new Canvas { Dock = DockStyle.Top, Height = 150, BackColor = Color.FromArgb(32, 26, 24) };
+        pInd.Paint += (s, e) => PaintInd(e.Graphics);
+        var head = new Canvas { Dock = DockStyle.Top, Height = TitleH, BackColor = Color.FromArgb(38, 35, 35) };
+        var rHide = new Rectangle(ChatW - 96, 0, 92, TitleH);
+        head.Paint += (s, e) =>
+        {
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (var f = new Font("Segoe UI", 11.5f, FontStyle.Bold)) e.Graphics.DrawString("Агент и проверки", f, Brushes.White, 12, (TitleH - f.Height) / 2f);
+            using (var f = new Font("Segoe UI", 10f)) using (var br = new SolidBrush(Color.FromArgb(255, 222, 175)))
+                e.Graphics.DrawString("скрыть ▸", f, br, rHide, new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+        };
+        head.MouseMove += (s, e) => head.Cursor = rHide.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+        head.MouseDown += (s, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            if (rHide.Contains(e.Location)) ToggleChat();
+            else { ReleaseCapture(); SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); }   // тянем окно и за шапку чата
+        };
+        pChat.Controls.Add(rtbChat); pChat.Controls.Add(low); pChat.Controls.Add(what); pChat.Controls.Add(pInd); pChat.Controls.Add(head);
+        Controls.Add(pChat);
+    }
+
+    void PaintInd(Graphics g)
+    {   // пять строк: точка, что проверяем и что это значит простыми словами
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias; g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        var r = last; var st = ChipState(); bool none = r == null || r.TaskSt <= 0;
+        string[,] rows = {
+            { "SSH 22 на этом ПК", none ? "доступ выключен" : r.SshOk ? "отвечает, вход только по ключу" : "служба не отвечает" },
+            { "Туннель до " + SN, none ? "не поднят" : r.TunOk ? "поднят " + Mins(r.TunUp) : "не поднят, программа сама повторит" },
+            { "Сервер " + SN, none ? "—" : r.SrvOk ? "на связи" : r.NetOk ? "не отвечает" : "нет интернета" },
+            { "Агент", none ? "зайти не может" : r.AgentN > 0 ? "подключён" + (r.AgentWho != "" ? ": " + r.AgentWho : "") + (r.AgentSince != "" ? " с " + r.AgentSince : "") : "не подключён" + (r.AgentSince != "" ? " (был в " + r.AgentSince + ")" : "") },
+            { "Что делает", none || r.Doing == "" ? "пока ничего" : r.DoingAt + " — " + r.Doing },
+        };
+        using (var fb = new Font("Segoe UI", 10f, FontStyle.Bold)) using (var fn = new Font("Segoe UI", 10f)) using (var br = new SolidBrush(Color.FromArgb(220, 210, 200)))
+            for (int i = 0; i < 5; i++)
+            {
+                float y = 10 + i * 27;
+                int c = i < 4 ? st[i] : (r != null && r.AgentN > 0 && r.Doing != "" ? 1 : 3);
+                using (var d = new SolidBrush(Dots[c])) g.FillEllipse(d, 14, y + 4, 11, 11);
+                g.DrawString(rows[i, 0], fb, Brushes.White, 32, y);
+                g.DrawString(rows[i, 1], fn, br, new RectangleF(170, y, ChatW - 180, 22), new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
+            }
+    }
+
+    void ToggleChat()
+    {
+        chatOpen = !chatOpen;
+        SuspendLayout();
+        if (chatOpen)
+        {
+            pChat.Visible = true; ClientSize = new Size(ClientSize.Width + ChatW, ClientSize.Height); MinimumSize = new Size(420 + ChatW, 560);
+            var sc = Screen.FromControl(this).WorkingArea;
+            if (Right > sc.Right) Left = Math.Max(sc.Left, sc.Right - Width);
+        }
+        else { MinimumSize = new Size(420, 560); pChat.Visible = false; ClientSize = new Size(ClientSize.Width - ChatW, ClientSize.Height); }
+        ResumeLayout(); Corners(); pCompact.Invalidate();
+        if (chatOpen) { chatShown = ""; FillChat(); PollChat(); txtChat.Focus(); }
+    }
+
+    static string Phone(string t) { string ph = Regex.Replace(t, @"\D", ""); return Regex.IsMatch(ph, @"^7\d{10}$") ? ph : "0"; }
+    static readonly string MineDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudeTunnel", "chat");
+
+    void FillChat()
+    {   // лента: журнал входов (серым), мои сообщения, ответы агента — с сервера и из agent.txt, пока агент на этом ПК
+        if (!chatOpen) return;
+        pInd.Invalidate();
+        var all = new List<string>();
+        if (last != null) all.AddRange(last.Feed);
+        lock (chatMine) all.AddRange(chatMine);
+        all.AddRange(chatAgent);
+        try
+        {
+            string af = Path.Combine(GuiDir, "chat", "agent.txt");
+            if (File.Exists(af)) foreach (var l in File.ReadAllLines(af, Encoding.UTF8).Reverse().Take(50))
+                { var m = Regex.Match(l, @"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\t(.+)$"); if (m.Success) all.Add(m.Groups[1].Value + "\tag\t" + m.Groups[2].Value); }
+        }
+        catch { }
+        var lines = all.Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (lines.Count > 200) lines = lines.Skip(lines.Count - 200).ToList();
+        string info = chatInfo, key = string.Join("\n", lines) + "\n" + info;
+        if (key == chatShown) return;
+        chatShown = key;
+        rtbChat.SuspendLayout(); rtbChat.Clear();
+        Action<string, Color, bool> add = (t, c, b) => { rtbChat.SelectionStart = rtbChat.TextLength; rtbChat.SelectionColor = c; rtbChat.SelectionFont = new Font("Segoe UI", 10.5f, b ? FontStyle.Bold : FontStyle.Regular); rtbChat.AppendText(t); };
+        if (lines.Count == 0) add("Здесь видно, кто заходил на этот ПК и что делал, и можно написать агенту.\r\n", Color.FromArgb(170, 160, 150), false);
+        foreach (var l in lines)
+        {
+            var a = l.Split(new[] { '\t' }, 3); if (a.Length < 3) continue;
+            DateTime at; string tm = DateTime.TryParse(a[0], out at) ? at.ToString(at.Date == DateTime.Today ? "HH:mm" : "dd.MM HH:mm") : a[0];
+            if (a[1] == "j") add(tm + "  " + a[2] + "\r\n", Color.FromArgb(150, 145, 140), false);
+            else
+            {
+                bool me = a[1] == "me";
+                add(tm + "  " + (me ? "я: " : "агент: "), me ? Color.FromArgb(255, 214, 110) : Color.FromArgb(110, 225, 140), true);
+                add(a[2] + "\r\n", Color.FromArgb(240, 230, 220), false);
+            }
+        }
+        if (info != "") add(info + "\r\n", Color.FromArgb(250, 140, 120), false);
+        rtbChat.SelectionStart = rtbChat.TextLength; rtbChat.ScrollToCaret(); rtbChat.ResumeLayout();
+    }
+
+    void PollChat()
+    {   // ответы агента лежат на сервере — забираем не чаще раза в 15 с, только пока чат открыт
+        chatGetAt = DateTime.Now;
+        if (chatBusy || Demo) return;
+        chatBusy = true; string ph = Phone(txtPhone.Text);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                string so, err;
+                if (SshCmd("chatget " + ph + " " + PcName(), "", "CHATGET=OK", out so, out err))
+                {
+                    chatAgent = so.Split('\n').Select(x => Regex.Match(x.TrimEnd('\r'), @"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\t(.+)$")).Where(m => m.Success)
+                                  .Select(m => m.Groups[1].Value + "\tag\t" + m.Groups[2].Value).ToArray();
+                    if (chatInfo.StartsWith("Нет связи")) chatInfo = "";
+                }
+                else chatInfo = "Нет связи с сервером " + SN + ": " + err;
+            }
+            finally { chatBusy = false; }
+            try { BeginInvoke(new Action(FillChat)); } catch { }
+        });
+    }
+
+    void SendChat()
+    {
+        string t = txtChat.Text.Trim(); if (t == "") return;
+        txtChat.Clear();
+        string line = FeedLine(DateTime.Now, "me", t);
+        lock (chatMine) chatMine.Add(line);
+        try { Directory.CreateDirectory(MineDir); File.AppendAllText(Path.Combine(MineDir, "mine.txt"), line + "\r\n", Encoding.UTF8); } catch { }
+        if (Demo) { FillChat(); return; }
+        chatInfo = "отправляю…"; FillChat();
+        string ph = Phone(txtPhone.Text);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string so, err;
+            bool ok = SshCmd("chat " + ph + " " + PcName(), t, "CHAT=OK", out so, out err);
+            chatInfo = ok ? "" : "Не отправилось (" + err + ") — попробуйте ещё раз или позвоните 79040617240";
+            try { BeginInvoke(new Action(FillChat)); } catch { }
+        });
+    }
+
     void SetMode(bool isFull)
     {
         SuspendLayout();
+        if (chatOpen) { chatOpen = false; pChat.Visible = false; }   // в подробном виде чата нет, обратно — закрытым
         foreach (var c in full) c.Visible = isFull;
         pCompact.Visible = !isFull; lnkSrc.Visible = isFull;   // в компактном ссылка нарисована на картинке
         FormBorderStyle = isFull ? FormBorderStyle.Sizable : FormBorderStyle.None;   // компактный — своё тёмное окно со скруглёнными углами
@@ -529,6 +745,7 @@ class MainForm : Form
     {
         if (copied && (DateTime.Now - copiedAt).TotalSeconds > 6) copied = false;
         pCompact.Invalidate();
+        if (chatOpen) { FillChat(); if ((DateTime.Now - chatGetAt).TotalSeconds >= 15) PollChat(); }
     }
 
     void FitColumns()
@@ -768,6 +985,59 @@ class MainForm : Form
         catch { }
         return r;
     }
+    // 104.16: сколько сейчас открыто входящих соединений SSH к этому ПК (туннель приходит на 127.0.0.1:22, Radmin — на свой адрес:22)
+    static int AgentConns()
+    {
+        int n = 0;
+        try
+        {
+            var p = Process.Start(new ProcessStartInfo("netstat", "-ano -p TCP") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true });
+            string o = p.StandardOutput.ReadToEnd(); p.WaitForExit(15000);
+            foreach (var ln in o.Split('\n'))
+            {
+                var a = ln.Split(new[] { ' ', '\t', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                if (a.Length >= 5 && a[0] == "TCP" && a[1].EndsWith(":22") && a[3] == "ESTABLISHED") n++;
+            }
+        }
+        catch { }
+        return n;
+    }
+    // 104.16: хвост журнала входов — кто зашёл последним, вышел ли, какая была последняя команда; status.txt агента главнее
+    static void JournalTail(Result R)
+    {
+        string t = ReadShared(JournalPath); if (string.IsNullOrEmpty(t)) return;
+        var lines = t.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        DateTime inAt = DateTime.MinValue, outAt = DateTime.MinValue;
+        foreach (var ln in lines.Skip(Math.Max(0, lines.Length - 300)))
+        {
+            var a = ln.Split(new[] { " | " }, StringSplitOptions.None); if (a.Length < 4) continue;
+            DateTime at; if (!DateTime.TryParseExact(a[0].Trim(), "dd.MM.yyyy HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out at)) continue;
+            string ev = a[1].Trim();
+            if (ev == "ВХОД") { inAt = at; R.AgentWho = a[2].Trim(); R.Feed.Add(FeedLine(at, "j", "вошёл: " + a[2].Trim() + " (" + a[3].Trim() + ")")); }
+            else if (ev == "ВЫХОД") { outAt = at; R.Feed.Add(FeedLine(at, "j", "вышел (" + a[3].Trim() + ")")); }
+            else if (ev == "КОМАНДА" && a.Length >= 5)
+            {
+                string c = a[4].Trim(); c = Regex.Replace(c, @"^.*?powershell(\.exe)?""?\s*(-\w+\s+)*", "", RegexOptions.IgnoreCase);
+                if (c.Length > 90) c = c.Substring(0, 90) + "…";
+                if (c == "") c = "открыл окно команд";
+                R.Doing = c; R.DoingAt = at.ToString("HH:mm"); R.Feed.Add(FeedLine(at, "j", "команда: " + c));
+            }
+            else if (ev.StartsWith("ОТКАЗ")) R.Feed.Add(FeedLine(at, "j", "отказ во входе"));
+        }
+        if (R.Feed.Count > 40) R.Feed.RemoveRange(0, R.Feed.Count - 40);
+        if (inAt > DateTime.MinValue) R.AgentSince = inAt.ToString(inAt.Date == DateTime.Today ? "HH:mm" : "dd.MM HH:mm");
+        try
+        {   // агент сам пишет, что делает: C:\ProgramData\ClaudeTunnel\gui\chat\status.txt (свежее 10 минут — главнее журнала)
+            string sf = Path.Combine(GuiDir, "chat", "status.txt");
+            if (File.Exists(sf) && (DateTime.Now - File.GetLastWriteTime(sf)).TotalMinutes < 10)
+            {
+                string s = (ReadShared(sf) ?? "").Trim(); if (s.Length > 120) s = s.Substring(0, 120) + "…";
+                if (s != "") { R.Doing = s; R.DoingAt = File.GetLastWriteTime(sf).ToString("HH:mm"); }
+            }
+        }
+        catch { }
+    }
+    static string FeedLine(DateTime at, string who, string text) { return at.ToString("yyyy-MM-dd HH:mm:ss") + "\t" + who + "\t" + text.Replace("\t", " ").Replace("\r", "").Replace("\n", " / "); }
     static string Banner()
     {
         try
@@ -878,8 +1148,15 @@ class MainForm : Form
             R.Head = "ТУННЕЛЬ НЕ ПОДНЯТ: " + why + (radPath ? "\nНо доступ есть через Radmin VPN " + rip : "");
         }
         SyncEvents();
+        // 104.16: агент — по живым соединениям к порту 22 (два раза подряд: короткая проверка сервера не в счёт) и по журналу
+        R.SshOk = sshOk; R.TunOk = tunnelAlive; R.SrvOk = srvOk || upLocal && net > 0; R.NetOk = net > 0; R.TunUp = up;
+        int ac = AgentConns(); R.AgentN = ac > 0 && prevConns > 0 ? ac : 0; prevConns = ac;
+        JournalTail(R);
+        rows.Add(new Row("Агент подключён", R.AgentN > 0 ? "да, сеансов SSH: " + R.AgentN + (R.AgentWho != "" ? " — " + R.AgentWho : "") + (R.AgentSince != "" ? ", вошёл в " + R.AgentSince : "") : "нет — сейчас никто не зашёл" + (R.AgentSince != "" ? " (последний вход " + R.AgentSince + ")" : ""), R.AgentN > 0 ? 1 : 3));
+        rows.Add(new Row("Что делает агент", R.Doing != "" ? R.DoingAt + " — " + R.Doing : "пока ничего (команд не было)", R.AgentN > 0 ? 1 : 3));
         return R;
     }
+    volatile int prevConns;
     static string Dur(double s) { var t = TimeSpan.FromSeconds(s); return t.TotalHours >= 1 ? (int)t.TotalHours + " ч " + t.Minutes + " мин" : t.TotalMinutes >= 1 ? (int)t.TotalMinutes + " мин" : (int)s + " с"; }
 
     void StartCheck()
@@ -896,8 +1173,13 @@ class MainForm : Form
     void Show(Result r)
     {
         if (Environment.GetCommandLineArgs().Contains("--demo-busy") && !busy) { busy = true; stepN = 4; prog = progShown = 0.48; stepLine = "4/7 Личный ключ этого ПК..."; }   // снимок хода установки
-        if (Environment.GetCommandLineArgs().Contains("--demo")) { r.TaskSt = 1; r.Overall = 1; r.Port = "22045"; }   // снимки для сайта: вид «открыт», ничего не включает
+        if (Environment.GetCommandLineArgs().Contains("--demo"))   // снимки для сайта: вид «открыт», ничего не включает
+        {
+            r.TaskSt = 1; r.Overall = 1; r.Port = "22045"; r.SshOk = r.TunOk = r.SrvOk = r.NetOk = true; r.TunUp = 3600;
+            r.AgentN = 1; r.AgentWho = "Claude (агент)"; r.AgentSince = DateTime.Now.AddMinutes(-7).ToString("HH:mm"); r.Doing = "проверяет базу 1С"; r.DoingAt = DateTime.Now.ToString("HH:mm"); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-7), "j", "вошёл: Claude (агент) (сервер 16)")); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-6), "ag", "Здравствуйте! Зашёл, смотрю базу 1С, ничего не закрывайте")); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-2), "j", "команда: проверка базы 1С"));
+        }
         last = r;
+        if (Environment.GetCommandLineArgs().Contains("--demo-chat") && !chatOpen && pChat != null) BeginInvoke(new Action(ToggleChat));   // снимок с открытым чатом
         if (!autoTried)
         {
             autoTried = true;
@@ -1113,6 +1395,7 @@ class MainForm : Form
             try
             {
                 var psi = new ProcessStartInfo(ssh, args) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+                if (cmd.StartsWith("chatget ")) psi.StandardOutputEncoding = new UTF8Encoding(false);   // ответы агента — UTF-8 (сервер РЕЛИЗ 5)
                 using (var p = Process.Start(psi))
                 {
                     int myPid = p.Id; lock (ownSsh) ownSsh.Add(myPid);

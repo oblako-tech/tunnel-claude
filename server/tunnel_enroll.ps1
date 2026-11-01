@@ -1,4 +1,4 @@
-﻿# Регистрация туннеля клиента — РЕЛИЗ 4 (27.10.2026, Мост 104.9). РЕЛИЗ 3 — 26.10.2026, ответ 12436. РЕЛИЗ 2 — 19.10.2026, ответ 9838. Запускается sshd (ForceCommand) от claude_enroll.
+﻿# Регистрация туннеля клиента — РЕЛИЗ 5 (01.11.2026, Мост 104.16). РЕЛИЗ 4 — 27.10.2026, Мост 104.9. РЕЛИЗ 3 — 26.10.2026, ответ 12436. РЕЛИЗ 2 — 19.10.2026, ответ 9838. Запускается sshd (ForceCommand) от claude_enroll.
 # РЕЛИЗ 2: можно БЕЗ сотового — вместо него «0»; уникальный номер клиента = выданный порт (не повторяется).
 #   Вход: "<сотовый 7XXXXXXXXXX или 0> ssh-ed25519 <ключ> [pc=ИМЯ_ПК] [rd=ID_RustDesk]". Выход: "PORT=<порт>".
 #   Строка ports.csv: кто;порт;ключ;дата;адрес;pc;rd. Сотовый потом — tunnel_bind.ps1 <порт> <сотовый>.
@@ -12,6 +12,11 @@
 #   "live <сотовый или 0> <ПК>" — живой лог, пока туннель не зелёный (Мост шлёт каждые 15 с): перезаписывает live.txt (до 256 КБ),
 #   дописывает live-history.log (больше 2 МБ — в .1, хранится 2 файла), в index.csv не пишется, чаще раза в 10 с — отказ.
 #   Лимит обычных логов клиенту поднят 60 -> 200 в сутки.
+# РЕЛИЗ 5 (01.11.2026, Мост 104.16, Михаил чат 1489): боковой чат Моста с агентом.
+#   "chat <сотовый или 0> <ПК>" — сообщение клиента через stdin (до 4 КБ, одной строкой): дописывается в tunnels\chat\<сотовый>_<ПК>\in.txt
+#   и в общий tunnels\chat\_new.txt (его раз в минуту забирает сторож ПК и шлёт текстом Михаилу). Только хранится, НИКОГДА не выполняется.
+#   Лимиты: не чаще раза в 2 с, 300 сообщений клиенту в сутки, папка чата до 50 МБ. Выход: "CHAT=OK" или "ERR ...".
+#   "chatget <сотовый или 0> <ПК>" — последние 50 строк out.txt (ответы агента «дата<TAB>текст», пишет агент/специалист), потом "CHATGET=OK".
 $ErrorActionPreference = 'Stop'
 $c = "$env:SSH_ORIGINAL_COMMAND".Trim()
 if ($c -match '^check (\d{5})$') {
@@ -46,6 +51,29 @@ if ($c -match '^live (7\d{10}|0) ([A-Za-z0-9._-]{1,40})$') {
     if ((Test-Path $hf) -and (Get-Item $hf).Length -gt 2MB) { Move-Item $hf "$hf.1" -Force }
     [IO.File]::AppendAllText($hf, "`r`n===== " + $head + $body, (New-Object Text.UTF8Encoding $false))
     'LIVE=OK'; exit 0
+}
+if ($c -match '^chat (7\d{10}|0) ([A-Za-z0-9._-]{1,40})$') {
+    $ph = $Matches[1]; $pc = $Matches[2]
+    $root = 'C:\ProgramData\ssh\tunnels\chat'; $d = Join-Path $root "${ph}_$pc"; New-Item -ItemType Directory -Force $d | Out-Null
+    $f = Join-Path $d 'in.txt'; $today = Get-Date -Format 'yyyy-MM-dd'
+    if ((Test-Path $f) -and ((Get-Date) - (Get-Item $f).LastWriteTime).TotalSeconds -lt 2) { 'ERR часто'; exit 1 }
+    if ((Test-Path $f) -and @(Get-Content $f -Encoding UTF8 | ? { $_ -like "$today*" }).Count -ge 300) { 'ERR лимит сообщений в сутки'; exit 1 }
+    if (((Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum) -gt 50MB) { 'ERR папка чата переполнена'; exit 1 }
+    $in = [Console]::OpenStandardInput(); $buf = New-Object byte[] 4096; $n = 0
+    while ($n -lt $buf.Length) { $r = $in.Read($buf, $n, $buf.Length - $n); if ($r -le 0) { break }; $n += $r }
+    $t = ([Text.Encoding]::UTF8.GetString($buf, 0, $n).Trim() -replace "`r", '' -replace "`n", ' / ' -replace "`t", ' ').Trim()
+    if ($t -eq '') { 'ERR пусто'; exit 1 }
+    $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; $ip = ($env:SSH_CLIENT -split ' ')[0]; $u8 = New-Object Text.UTF8Encoding $false
+    [IO.File]::AppendAllText($f, "$now`t$t`r`n", $u8)
+    $m = New-Object Threading.Mutex($false, 'claude_enroll_chat'); [void]$m.WaitOne(10000)
+    try { [IO.File]::AppendAllText((Join-Path $root '_new.txt'), "$now`t$ph`t$pc`t$ip`t$t`r`n", $u8) } finally { $m.ReleaseMutex() }
+    'CHAT=OK'; exit 0
+}
+if ($c -match '^chatget (7\d{10}|0) ([A-Za-z0-9._-]{1,40})$') {
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false   # Мост 104.16 читает ответ как UTF-8 (иначе русский — кракозябры)
+    $f = Join-Path 'C:\ProgramData\ssh\tunnels\chat' "$($Matches[1])_$($Matches[2])\out.txt"
+    if (Test-Path $f) { Get-Content $f -Encoding UTF8 -Tail 50 }
+    'CHATGET=OK'; exit 0
 }
 if ($c -match '^log (7\d{10}|0) ([A-Za-z0-9._-]{1,40})$') {
     $ph = $Matches[1]; $pc = $Matches[2]
