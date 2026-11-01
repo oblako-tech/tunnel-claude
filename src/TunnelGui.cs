@@ -60,6 +60,8 @@ class Result
     // 104.16 (Михаил, чат 1489): индикаторы «SSH 22 · Туннель · Сервер · Агент» и что делает агент
     public bool SshOk, TunOk, SrvOk, NetOk; public double TunUp; public int AgentN; public string AgentWho = "", AgentSince = "", Doing = "", DoingAt = "";
     public List<string> Feed = new List<string>();   // последние входы, выходы и команды из журнала — в ленту чата
+    // 104.17 (Михаил, чат 1489): «через Радмин агент зашёл, или через Мост, или статика, как именно 22 порт захвачен»
+    public string Route = "", RouteLast = "", Port22 = "", Port22Full = "", Fw22 = ""; public int Port22St = 3, Fw22St = 3;
 }
 
 class MainForm : Form
@@ -555,7 +557,7 @@ class MainForm : Form
     {
         var r = last;
         if (r == null) return "проверяю…";
-        if (r.AgentN > 0) return "Агент на связи: " + (r.AgentWho != "" ? r.AgentWho : "специалист") + (r.AgentSince != "" ? " с " + r.AgentSince : "") + (r.Doing != "" ? " — " + r.Doing : "");
+        if (r.AgentN > 0) return "Агент на связи: " + (r.AgentWho != "" ? r.AgentWho : "специалист") + (r.AgentSince != "" ? " с " + r.AgentSince : "") + (r.Route != "" ? ", " + RouteText(r, false) : "") + (r.Doing != "" ? " — " + r.Doing : "");
         if (r.TaskSt <= 0 || !r.TunOk) return "Агент не может зайти: туннель не поднят";
         return "Агент сейчас не подключён" + (r.AgentSince != "" ? " (последний вход " + r.AgentSince + ")" : "");
     }
@@ -573,10 +575,10 @@ class MainForm : Form
         txtChat.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Enter) { e.SuppressKeyPress = true; SendChat(); } };
         bSend.Click += delegate { SendChat(); };
         low.Controls.Add(txtChat); low.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 6 }); low.Controls.Add(bSend);
-        var what = new Label { Dock = DockStyle.Top, Height = 136, Padding = new Padding(12, 6, 12, 6), ForeColor = Color.FromArgb(255, 222, 175), BackColor = Color.FromArgb(44, 36, 32), Font = new Font("Segoe UI", 9.5f),
+        var what = new Label { Dock = DockStyle.Top, Height = 118, Padding = new Padding(12, 6, 12, 6), ForeColor = Color.FromArgb(255, 222, 175), BackColor = Color.FromArgb(44, 36, 32), Font = new Font("Segoe UI", 9.5f),
             Text = "Зелёный «Мы рядом» = туннель поднят, сервер " + SN + " на связи, SSH на этом ПК отвечает: агент или специалист может зайти в любую минуту.\r\n" +
                    "НЕ значит, что агент уже зашёл или что-то делает — это видно в строке «Агент». Закрыть доступ — кнопка «Отключить»." };
-        pInd = new Canvas { Dock = DockStyle.Top, Height = 150, BackColor = Color.FromArgb(32, 26, 24) };
+        pInd = new Canvas { Dock = DockStyle.Top, Height = 212, BackColor = Color.FromArgb(32, 26, 24) };
         pInd.Paint += (s, e) => PaintInd(e.Graphics);
         var head = new Canvas { Dock = DockStyle.Top, Height = TitleH, BackColor = Color.FromArgb(38, 35, 35) };
         var rHide = new Rectangle(ChatW - 96, 0, 92, TitleH);
@@ -599,7 +601,7 @@ class MainForm : Form
     }
 
     void PaintInd(Graphics g)
-    {   // пять строк: точка, что проверяем и что это значит простыми словами
+    {   // восемь строк: точка, что проверяем и что это значит простыми словами (104.17: + как зашёл, кто держит 22, кому открыт)
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias; g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         var r = last; var st = ChipState(); bool none = r == null || r.TaskSt <= 0;
         string[,] rows = {
@@ -607,13 +609,17 @@ class MainForm : Form
             { "Туннель до " + SN, none ? "не поднят" : r.TunOk ? "поднят " + Mins(r.TunUp) : "не поднят, программа сама повторит" },
             { "Сервер " + SN, none ? "—" : r.SrvOk ? "на связи" : r.NetOk ? "не отвечает" : "нет интернета" },
             { "Агент", none ? "зайти не может" : r.AgentN > 0 ? "подключён" + (r.AgentWho != "" ? ": " + r.AgentWho : "") + (r.AgentSince != "" ? " с " + r.AgentSince : "") : "не подключён" + (r.AgentSince != "" ? " (был в " + r.AgentSince + ")" : "") },
+            { "Как зашёл", r == null ? "—" : RouteText(r, false) },
             { "Что делает", none || r.Doing == "" ? "пока ничего" : r.DoingAt + " — " + r.Doing },
+            { "Порт 22 держит", r == null || r.Port22 == "" ? "—" : r.Port22 },
+            { "Кому открыт 22", r == null || r.Fw22 == "" ? "—" : r.Fw22St == 2 ? "ОТКРЫТ ВСЕМ — опасно" : r.Fw22St == 1 ? "только наши IP и этот ПК" : "снаружи закрыт" },
         };
         using (var fb = new Font("Segoe UI", 10f, FontStyle.Bold)) using (var fn = new Font("Segoe UI", 10f)) using (var br = new SolidBrush(Color.FromArgb(220, 210, 200)))
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 8; i++)
             {
-                float y = 10 + i * 27;
-                int c = i < 4 ? st[i] : (r != null && r.AgentN > 0 && r.Doing != "" ? 1 : 3);
+                float y = 8 + i * 25;
+                bool live = r != null && r.AgentN > 0;
+                int c = i < 4 ? st[i] : i == 4 ? (live ? 1 : 3) : i == 5 ? (live && r.Doing != "" ? 1 : 3) : i == 6 ? (r == null ? 3 : r.Port22St) : (r == null ? 3 : r.Fw22St);
                 using (var d = new SolidBrush(Dots[c])) g.FillEllipse(d, 14, y + 4, 11, 11);
                 g.DrawString(rows[i, 0], fb, Brushes.White, 32, y);
                 g.DrawString(rows[i, 1], fn, br, new RectangleF(170, y, ChatW - 180, 22), new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
@@ -854,6 +860,35 @@ class MainForm : Form
     }
     static string From(string ip) { string v; return ip != null && FromMap.TryGetValue(ip, out v) ? v : ip; }
 
+    // 104.17: каким путём пришёл вход — Мост (обратный туннель приходит на 127.0.0.1/::1), Radmin VPN (26.x), локальная сеть или прямой IP
+    static string CleanIp(string ip) { ip = (ip ?? "").Trim().Trim('[', ']'); if (ip.StartsWith("::ffff:", StringComparison.OrdinalIgnoreCase)) ip = ip.Substring(7); int z = ip.IndexOf('%'); return z > 0 ? ip.Substring(0, z) : ip; }
+    static string RouteKind(string ip)
+    {
+        ip = CleanIp(ip);
+        if (ip == "127.0.0.1" || ip == "::1") return "Мост";
+        if (ip.StartsWith("26.")) return "Radmin VPN";
+        var m = Regex.Match(ip, @"^172\.(\d+)\.");
+        if (ip.StartsWith("10.") || ip.StartsWith("192.168.") || ip.StartsWith("169.254.") || ip.StartsWith("fe80", StringComparison.OrdinalIgnoreCase) || m.Success && int.Parse(m.Groups[1].Value) >= 16 && int.Parse(m.Groups[1].Value) <= 31) return "локальная сеть";
+        return "статика";
+    }
+    static string Route(string ip)
+    {
+        string c = CleanIp(ip), k = RouteKind(c), lb; FromMap.TryGetValue(c, out lb);
+        if (k == "Мост") return "через Мост: туннель с сервера " + SN + " (" + c + ")";
+        if (k == "Radmin VPN") return "через Radmin VPN " + c + (lb != null ? " — " + lb.Replace("Radmin: ", "") : "");
+        if (k == "локальная сеть") return "из локальной сети " + c;
+        return "напрямую по IP " + c + " (статика)" + (lb != null ? " — " + lb : "");
+    }
+    // старые строки журнала (до 104.17) писали «через туннель …» или «Radmin: …» — узнаём путь по тексту
+    static string RouteOfText(string from)
+    {
+        if (from.Contains("Мост") || from.IndexOf("туннел", StringComparison.OrdinalIgnoreCase) >= 0) return "Мост";
+        if (from.Contains("Radmin")) return "Radmin VPN";
+        if (from.Contains("локальной сети")) return "локальная сеть";
+        var ip = Regex.Match(from, @"\d+\.\d+\.\d+\.\d+|[0-9a-f:]*:[0-9a-f:]+", RegexOptions.IgnoreCase);
+        return ip.Success ? RouteKind(ip.Value) : from.Contains("статика") ? "статика" : "";
+    }
+
     // входы и выходы из журнала Windows OpenSSH -> в журнал в папке LogDir (C:\Мост)
     static void SyncEvents()
     {
@@ -875,11 +910,11 @@ class MainForm : Form
                         if (a.Success)
                         {
                             string who; if (!Keys.TryGetValue(a.Groups[3].Value, out who)) who = "НЕИЗВЕСТНЫЙ ключ " + a.Groups[3].Value;
-                            Journal(e.TimeCreated, "ВХОД", who, From(a.Groups[2].Value), "вход Windows: " + a.Groups[1].Value);
+                            Journal(e.TimeCreated, "ВХОД", who, Route(a.Groups[2].Value), "вход Windows: " + a.Groups[1].Value);
                             continue;
                         }
                         var d = Regex.Match(m, @"Disconnected from (?:user )?(.+?) (\S+) port \d+");
-                        if (d.Success) { Journal(e.TimeCreated, "ВЫХОД", "", From(d.Groups[2].Value), "вход Windows: " + d.Groups[1].Value); continue; }
+                        if (d.Success) { Journal(e.TimeCreated, "ВЫХОД", "", Route(d.Groups[2].Value), "вход Windows: " + d.Groups[1].Value); continue; }
                         if (Regex.IsMatch(m, "Failed publickey|Invalid user|Failed password")) Journal(e.TimeCreated, "ОТКАЗ ВО ВХОДЕ", "", "", m.Trim());
                     }
             }
@@ -986,21 +1021,105 @@ class MainForm : Form
         return r;
     }
     // 104.16: сколько сейчас открыто входящих соединений SSH к этому ПК (туннель приходит на 127.0.0.1:22, Radmin — на свой адрес:22)
-    static int AgentConns()
+    // 104.17: одним netstat (без -p, чтобы видеть и IPv6 [::1]) — откуда эти соединения и кто слушает порт 22
+    static int SshNet(Result R, int taskSt)
     {
-        int n = 0;
+        int n = 0; var kinds = new List<string>(); var listen = new Dictionary<int, List<string>>();
         try
         {
-            var p = Process.Start(new ProcessStartInfo("netstat", "-ano -p TCP") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true });
+            var p = Process.Start(new ProcessStartInfo("netstat", "-ano") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true });
             string o = p.StandardOutput.ReadToEnd(); p.WaitForExit(15000);
             foreach (var ln in o.Split('\n'))
             {
                 var a = ln.Split(new[] { ' ', '\t', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                if (a.Length >= 5 && a[0] == "TCP" && a[1].EndsWith(":22") && a[3] == "ESTABLISHED") n++;
+                if (a.Length < 5 || a[0] != "TCP" || !a[1].EndsWith(":22")) continue;
+                if (a[3] == "ESTABLISHED")
+                {
+                    n++; string rip = a[2].Substring(0, a[2].LastIndexOf(':')), k = RouteKind(rip);
+                    string s = k == "Мост" ? "Мост" : k + " " + CleanIp(rip);
+                    if (!kinds.Contains(s)) kinds.Add(s);
+                }
+                else if (a[3] == "LISTENING")
+                {
+                    int pid; if (!int.TryParse(a[4], out pid)) continue;
+                    if (!listen.ContainsKey(pid)) listen[pid] = new List<string>();
+                    listen[pid].Add(CleanIp(a[1].Substring(0, a[1].LastIndexOf(':'))));
+                }
             }
         }
         catch { }
+        R.Route = string.Join(" + ", kinds);
+        Port22Of(R, listen, taskSt);
+        Fw22Of(R);
         return n;
+    }
+    static readonly Dictionary<int, string> svcByPid = new Dictionary<int, string>();
+    static void Port22Of(Result R, Dictionary<int, List<string>> listen, int taskSt)
+    {
+        if (listen.Count == 0)
+        {
+            R.Port22St = taskSt > 0 ? 0 : 3; R.Port22 = "никто не слушает";
+            R.Port22Full = "порт 22 никто не слушает — служба SSH остановлена" + (taskSt > 0 ? ", нажмите «ПОЧИНИТЬ»" : " (доступ выключен)"); return;
+        }
+        var parts = new List<string>(); var shorts = new List<string>(); int st = 1;
+        foreach (var kv in listen)
+        {
+            string name = "?"; try { name = Process.GetProcessById(kv.Key).ProcessName + ".exe"; } catch { name = kv.Key == 4 ? "System" : "процесс " + kv.Key; }
+            string svc;
+            lock (svcByPid)
+                if (!svcByPid.TryGetValue(kv.Key, out svc))
+                {
+                    svc = "";
+                    try
+                    {
+                        using (var q = new ManagementObjectSearcher("SELECT Name,DisplayName FROM Win32_Service WHERE ProcessId=" + kv.Key))
+                            foreach (ManagementObject s in q.Get()) { svc = "" + s["Name"] + "|" + s["DisplayName"]; break; }
+                    }
+                    catch { }
+                    svcByPid[kv.Key] = svc;
+                }
+            var adr = kv.Value.Distinct().ToList();
+            bool all4 = adr.Contains("0.0.0.0"), all6 = adr.Contains("::");
+            string where = all4 && all6 ? "все адреса (0.0.0.0 и ::)" : all4 ? "все адреса IPv4 (0.0.0.0)" : adr.All(x => x == "127.0.0.1" || x == "::1") ? "только этот ПК (" + string.Join(", ", adr) + ")" : string.Join(", ", adr);
+            string sn = svc.Split('|')[0];
+            bool sshd = name.Equals("sshd.exe", StringComparison.OrdinalIgnoreCase);
+            if (sshd && sn.Equals("sshd", StringComparison.OrdinalIgnoreCase))
+            { parts.Add("служба OpenSSH «sshd» (sshd.exe, PID " + kv.Key + "), слушает " + where); shorts.Add("OpenSSH sshd, " + (all4 || all6 ? "все адреса" : where)); }
+            else if (sshd)
+            { st = Math.Max(st, 2); parts.Add("sshd.exe (PID " + kv.Key + ") " + (sn != "" ? "под службой «" + sn + "»" : "без службы, запущен вручную") + ", слушает " + where); shorts.Add("sshd " + (sn != "" ? "служба " + sn : "без службы")); }
+            else
+            { st = 0; parts.Add("ЗАНЯТ ЧУЖОЙ ПРОГРАММОЙ " + name + (sn != "" ? " (служба «" + svc.Split('|').Last() + "»)" : "") + ", PID " + kv.Key + " — наш SSH не может работать, нажмите «ПОЧИНИТЬ» или позвоните нам"); shorts.Add("занят: " + name); }
+        }
+        R.Port22St = st == 1 ? 1 : st == 2 ? 2 : 0; R.Port22 = string.Join("; ", shorts); R.Port22Full = string.Join("; ", parts);
+    }
+    static DateTime fwAt = DateTime.MinValue; static string fwText = ""; static int fwSt = 3;
+    static void Fw22Of(Result R)
+    {   // правила брандмауэра Windows, которые пускают на TCP 22 (раз в 5 минут — обход правил небыстрый)
+        if ((DateTime.Now - fwAt).TotalMinutes >= 5)
+        {
+            fwAt = DateTime.Now; var lst = new List<string>(); bool any = false;
+            try
+            {
+                dynamic pol = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2"));
+                foreach (dynamic ru in pol.Rules)
+                {
+                    try
+                    {
+                        if (!(bool)ru.Enabled || (int)ru.Direction != 1 || (int)ru.Action != 1) continue;
+                        int pr = (int)ru.Protocol; if (pr != 6 && pr != 256) continue;
+                        string lp = "" + ru.LocalPorts; if (!lp.Split(',').Any(x => x.Trim() == "22")) continue;
+                        string ra = ("" + ru.RemoteAddresses).Replace("/255.255.255.255", "");
+                        if (ra == "*" || ra == "") { any = true; ra = "всем"; }
+                        lst.Add("«" + ru.Name + "»: " + (ra.Length > 80 ? ra.Substring(0, 80) + "…" : ra));
+                    }
+                    catch { }
+                }
+                fwSt = any ? 2 : lst.Count > 0 ? 1 : 3;
+                fwText = lst.Count == 0 ? "правил для 22 нет — снаружи закрыт, Мост (127.0.0.1) работает и так" : (any ? "ОТКРЫТ ВСЕМ — " : "") + string.Join("; ", lst);
+            }
+            catch (Exception ex) { fwSt = 3; fwText = "не удалось прочитать: " + ex.Message; }
+        }
+        R.Fw22 = fwText; R.Fw22St = fwSt;
     }
     // 104.16: хвост журнала входов — кто зашёл последним, вышел ли, какая была последняя команда; status.txt агента главнее
     static void JournalTail(Result R)
@@ -1013,7 +1132,7 @@ class MainForm : Form
             var a = ln.Split(new[] { " | " }, StringSplitOptions.None); if (a.Length < 4) continue;
             DateTime at; if (!DateTime.TryParseExact(a[0].Trim(), "dd.MM.yyyy HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out at)) continue;
             string ev = a[1].Trim();
-            if (ev == "ВХОД") { inAt = at; R.AgentWho = a[2].Trim(); R.Feed.Add(FeedLine(at, "j", "вошёл: " + a[2].Trim() + " (" + a[3].Trim() + ")")); }
+            if (ev == "ВХОД") { inAt = at; R.AgentWho = a[2].Trim(); R.RouteLast = RouteOfText(a[3].Trim()); R.Feed.Add(FeedLine(at, "j", "вошёл: " + a[2].Trim() + " (" + a[3].Trim() + ")")); }
             else if (ev == "ВЫХОД") { outAt = at; R.Feed.Add(FeedLine(at, "j", "вышел (" + a[3].Trim() + ")")); }
             else if (ev == "КОМАНДА" && a.Length >= 5)
             {
@@ -1150,13 +1269,32 @@ class MainForm : Form
         SyncEvents();
         // 104.16: агент — по живым соединениям к порту 22 (два раза подряд: короткая проверка сервера не в счёт) и по журналу
         R.SshOk = sshOk; R.TunOk = tunnelAlive; R.SrvOk = srvOk || upLocal && net > 0; R.NetOk = net > 0; R.TunUp = up;
-        int ac = AgentConns(); R.AgentN = ac > 0 && prevConns > 0 ? ac : 0; prevConns = ac;
+        int ac = SshNet(R, R.TaskSt); R.AgentN = ac > 0 && prevConns > 0 ? ac : 0; prevConns = ac;
+        if (R.AgentN == 0) R.Route = "";
         JournalTail(R);
         rows.Add(new Row("Агент подключён", R.AgentN > 0 ? "да, сеансов SSH: " + R.AgentN + (R.AgentWho != "" ? " — " + R.AgentWho : "") + (R.AgentSince != "" ? ", вошёл в " + R.AgentSince : "") : "нет — сейчас никто не зашёл" + (R.AgentSince != "" ? " (последний вход " + R.AgentSince + ")" : ""), R.AgentN > 0 ? 1 : 3));
+        rows.Add(new Row("Как зашёл агент", RouteText(R, true), R.AgentN > 0 ? 1 : 3));
         rows.Add(new Row("Что делает агент", R.Doing != "" ? R.DoingAt + " — " + R.Doing : "пока ничего (команд не было)", R.AgentN > 0 ? 1 : 3));
+        rows.Add(new Row("Кто держит порт 22", R.Port22Full, R.Port22St));
+        rows.Add(new Row("Кому открыт порт 22 (брандмауэр)", R.Fw22, R.Fw22St));
         return R;
     }
     volatile int prevConns;
+    // «через Мост» / «через Radmin VPN 26.x» сейчас, иначе — каким путём был последний вход
+    static string RouteText(Result r, bool full)
+    {
+        if (r.AgentN > 0 && r.Route != "") return string.Join(" + ", r.Route.Split(new[] { " + " }, StringSplitOptions.None).Select(k => WhyRoute(k, full)));
+        if (r.RouteLast != "") return (full ? "последний раз " : "был ") + WhyRoute(r.RouteLast, full) + (r.AgentSince != "" ? (full ? " в " : ", ") + r.AgentSince : "");
+        return "входов ещё не было";
+    }
+    static string WhyRoute(string k, bool full)
+    {
+        if (k == "Мост") return full ? "через Мост (туннель с сервера " + SN + ")" : "через Мост";
+        if (k.StartsWith("Radmin")) return "через " + k;
+        if (k.StartsWith("локальная сеть")) return "из локальной сети" + k.Substring(14);
+        if (k.StartsWith("статика")) return k.Length > 7 ? "напрямую по IP" + k.Substring(7) + " (статика)" : "напрямую по IP (статика)";
+        return k;
+    }
     static string Dur(double s) { var t = TimeSpan.FromSeconds(s); return t.TotalHours >= 1 ? (int)t.TotalHours + " ч " + t.Minutes + " мин" : t.TotalMinutes >= 1 ? (int)t.TotalMinutes + " мин" : (int)s + " с"; }
 
     void StartCheck()
@@ -1176,7 +1314,8 @@ class MainForm : Form
         if (Environment.GetCommandLineArgs().Contains("--demo"))   // снимки для сайта: вид «открыт», ничего не включает
         {
             r.TaskSt = 1; r.Overall = 1; r.Port = "22045"; r.SshOk = r.TunOk = r.SrvOk = r.NetOk = true; r.TunUp = 3600;
-            r.AgentN = 1; r.AgentWho = "Claude (агент)"; r.AgentSince = DateTime.Now.AddMinutes(-7).ToString("HH:mm"); r.Doing = "проверяет базу 1С"; r.DoingAt = DateTime.Now.ToString("HH:mm"); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-7), "j", "вошёл: Claude (агент) (сервер 16)")); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-6), "ag", "Здравствуйте! Зашёл, смотрю базу 1С, ничего не закрывайте")); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-2), "j", "команда: проверка базы 1С"));
+            r.AgentN = 1; r.AgentWho = "Claude (агент)"; r.AgentSince = DateTime.Now.AddMinutes(-7).ToString("HH:mm"); r.Doing = "проверяет базу 1С"; r.DoingAt = DateTime.Now.ToString("HH:mm"); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-7), "j", "вошёл: Claude (агент) (через Мост: туннель с сервера 16 (127.0.0.1))"));
+            r.Route = r.RouteLast = "Мост"; r.Port22St = 1; r.Port22 = "OpenSSH sshd, все адреса"; r.Port22Full = "служба OpenSSH «sshd» (sshd.exe, PID 3120), слушает все адреса (0.0.0.0 и ::)"; r.Fw22St = 1; r.Fw22 = "«SSH-Claude-In»: адреса специалистов; «Claude туннель loopback»: 127.0.0.1, ::1"; r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-6), "ag", "Здравствуйте! Зашёл, смотрю базу 1С, ничего не закрывайте")); r.Feed.Add(FeedLine(DateTime.Now.AddMinutes(-2), "j", "команда: проверка базы 1С"));
         }
         last = r;
         if (Environment.GetCommandLineArgs().Contains("--demo-chat") && !chatOpen && pChat != null) BeginInvoke(new Action(ToggleChat));   // снимок с открытым чатом
